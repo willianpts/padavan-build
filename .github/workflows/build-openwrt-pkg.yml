@@ -1,0 +1,86 @@
+###############################################################
+# Author(s): Việt Anh Bùi | https://github.com/vietanhbui2000 #
+###############################################################
+
+name: Build OpenWrt Package
+
+on:
+  push:
+    paths:
+      - 'triggers/build-openwrt-pkg.md'
+
+env:
+  DL_SDK_SH: scripts/openwrt/dl_sdk.sh
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo timedatectl set-timezone "$TZ"
+        sudo -E apt-get update
+        sudo -E apt-get -y install build-essential ccache ecj fastjar file g++ gawk \
+        gettext git java-propose-classpath libelf-dev libncurses5-dev \
+        libncursesw5-dev libssl-dev python python2.7-dev python3 unzip wget \
+        python3-distutils python3-setuptools rsync subversion swig time \
+        xsltproc zlib1g-dev
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get clean
+
+    - name: Download SDK
+      run: |
+        mkdir -p openwrt
+        cp $DL_SDK_SH openwrt/dl_sdk.sh
+        cd openwrt
+        sh dl_sdk.sh
+
+    - name: Load package feeds
+      run: |
+        cd openwrt/sdk
+        echo "src-git vietanhbui2000 https://github.com/vietanhbui2000/openwrt-packages.git" >> feeds.conf.default
+
+    - name: Update & install feeds
+      run: |
+        cd openwrt/sdk
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Generate default configuration
+      run: |
+        cd openwrt/sdk
+        make defconfig
+
+    - name: Download packages
+      run: |
+        cd openwrt/sdk
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile package
+      id: compile
+      run: |
+        cd openwrt/sdk
+        make package/luci-app-argon-config/compile V=s -j$(nproc)
+        make package/luci-app-clear_luci_cache/compile V=s -j$(nproc)
+        make package/luci-app-clear_ram/compile V=s -j$(nproc)
+        make package/luci-app-vsftpd/compile V=s -j$(nproc)
+        make package/luci-theme-argon/compile V=s -j$(nproc)
+        echo "::set-output name=status::success"
+        echo "DATE=$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Upload package directory
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success'
+      with:
+        name: openwrt_package_${{ env.DATE }}
+        path: openwrt/sdk/bin/packages

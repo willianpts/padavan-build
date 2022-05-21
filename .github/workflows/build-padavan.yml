@@ -1,0 +1,97 @@
+###############################################################
+# Author(s): Việt Anh Bùi | https://github.com/vietanhbui2000 #
+#            hanwckf | https://github.com/hanwckf             #
+###############################################################
+
+name: Build Padavan
+
+on:
+  push:
+    paths:
+      - 'triggers/build-padavan.md'
+
+env:
+  REPO_URL: https://github.com/vietanhbui2000/padavan
+  REPO_BRANCH: update
+  DEVICE_NAME: MiWiFi-R1CM
+  CUSTOMIZE_FIRMWARE: false
+  USE_PRECOMPILED_TOOLCHAIN: true
+  CUSTOMIZE_SH: scripts/padavan/customize.sh
+  DL_TOOLCHAIN_SH: scripts/padavan/dl_toolchain.sh
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo timedatectl set-timezone "$TZ"
+        sudo -E apt-get update
+        sudo -E apt-get -y install unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
+        fakeroot kmod cpio git python3-docutils gettext automake autopoint \
+        texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev \
+        libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc-dev-bin libz-dev
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get clean
+
+    - name: Clone source code
+      run: |
+        git clone $REPO_URL /opt/padavan
+        cd /opt/padavan
+        git checkout $REPO_BRANCH
+
+    - name: Load device configuration
+      run: |
+        cp -R configs/padavan/$DEVICE_NAME /opt/padavan/trunk/configs/boards
+        cp configs/padavan/$DEVICE_NAME.config /opt/padavan/trunk/.config
+        cp configs/padavan/$DEVICE_NAME.config /opt/padavan/trunk/configs/templates/$DEVICE_NAME.config
+
+    - name: Customize firmware
+      if: env.CUSTOMIZE_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cp $CUSTOMIZE_SH /opt/padavan/trunk/customize.sh
+        cd /opt/padavan/trunk
+        chmod +x customize.sh
+        ./customize.sh
+
+    - name: Download pre-compiled toolchain
+      if: env.USE_PRECOMPILED_TOOLCHAIN == 'true' && !cancelled()
+      run: |
+        cp $DL_TOOLCHAIN_SH /opt/padavan/toolchain-mipsel/dl_toolchain.sh
+        cd /opt/padavan/toolchain-mipsel
+        sh dl_toolchain.sh
+
+    - name: Compile toolchain
+      if: env.USE_PRECOMPILED_TOOLCHAIN == 'false' && !cancelled()
+      run: |
+        cd /opt/padavan/toolchain-mipsel
+        ./clean_toolchain
+        ./build_toolchain
+
+    - name: Clean up files
+      run: |
+        cd /opt/padavan/trunk
+        ./clear_tree
+
+    - name: Compile firmware
+      id: compile
+      run: |
+        cd /opt/padavan/trunk
+        fakeroot ./build_firmware_modify $DEVICE_NAME
+        echo "::set-output name=status::success"
+        echo "DATE=$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Upload firmware
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success'
+      with:
+        name: ${{ env.DEVICE_NAME }}_padavan_${{ env.DATE }}
+        path: /opt/padavan/trunk/images/*.trx
